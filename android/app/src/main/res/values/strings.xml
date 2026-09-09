@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Instagram</string>
+    <string name="title_activity_main">Instagram</string>
+    <string name="package_name">com.aurastagram.app</string>
+    <string name="custom_url_scheme">com.aurastagram.app</string>
+</resources>
