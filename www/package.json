@@ -1,0 +1,12 @@
+﻿{
+  "name": "aurastagram",
+  "version": "1.0.0",
+  "description": "Instagram clone - pure HTML/CSS/JS",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
