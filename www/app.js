@@ -1,4 +1,4 @@
-﻿/* =========================================================
+/* =========================================================
    AURASTAGRAM — Pure Vanilla JS Instagram Clone
    All data stored in localStorage. No backend required.
    ========================================================= */
@@ -61,60 +61,70 @@ let viewingProfileId = null;
 let chatPartnerId = null;
 let optionsCallback = null;
 
-// ─── SAMPLE PLACEHOLDER IMAGES (gradient data URIs) ────────
-// We generate colourful placeholder squares instead of real images
-function gradientImg(c1,c2,w=400,h=400){
-  const c=document.createElement('canvas'); c.width=w; c.height=h;
-  const g=c.getContext('2d').createLinearGradient(0,0,w,h);
-  g.addColorStop(0,c1); g.addColorStop(1,c2);
-  const ctx=c.getContext('2d'); ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
-  return c.toDataURL();
+// ─── API & DATA SYNC ──────────────────────────────────────
+const API_BASE = window.location.protocol.startsWith('http') ? '' : 'https://aurastagram.onrender.com';
+const DATA_VERSION = 'v3';
+
+function generateDefaultAvatar(name){
+  const initial = (name || 'U').charAt(0).toUpperCase();
+  return `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" rx="50" fill="%23262626"/><text x="50" y="55" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="44" font-weight="bold" fill="%23ffffff" text-anchor="middle" dominant-baseline="middle">${initial}</text></svg>`;
 }
-// Pre-baked base64 gradients (small, safe for localStorage demo)
-const DEMO_IMGS=[
-  gradientImg('#833ab4','#fd1d1d'),gradientImg('#f9c74f','#f3722c'),
-  gradientImg('#90be6d','#43aa8b'),gradientImg('#4361ee','#3a0ca3'),
-  gradientImg('#e63946','#f1faee'),gradientImg('#2d6a4f','#74c69d'),
-  gradientImg('#ff9f1c','#ffbf69'),gradientImg('#6d6875','#b5838d'),
-];
 
-// ─── DATA INIT ─────────────────────────────────────────────
+async function apiCall(endpoint, method='GET', body=null){
+  try {
+    const opts = { method, headers: {} };
+    if(body){
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(API_BASE + endpoint, opts);
+    return await res.json();
+  } catch(e) {
+    return null;
+  }
+}
+
+async function syncData(silent = false){
+  const data = await apiCall('/api/data');
+  if(data && data.users){
+    S.set('users', data.users);
+    S.set('posts', data.posts || []);
+    S.set('stories', data.stories || []);
+    S.set('messages', data.messages || {});
+    S.set('notifications', data.notifications || []);
+
+    if(currentUser){
+      const refreshed = data.users.find(u => u.id === currentUser.id);
+      if(refreshed){
+        currentUser = refreshed;
+      }
+    }
+
+    if(!silent && currentUser){
+      if(currentTab === 'home'){ renderStories(); renderFeed(); }
+      else if(currentTab === 'explore'){ renderExplore(); }
+      else if(currentTab === 'profile'){ renderProfile(); }
+      else if(currentTab === 'direct'){
+        if(chatPartnerId) renderChatMessages();
+        else renderDM();
+      }
+      else if(currentTab === 'notifications'){ renderNotifications(); }
+      renderDMBadge();
+      renderNotifBadge();
+    }
+  }
+}
+
 function initData(){
-  if(S.get('initialized')) return;
-  // Demo accounts (no real users, fully fake placeholders)
-  const users=[
-    {id:'u1',username:'nisa_foto',fullname:'Nisa Çelik',bio:'📸 Fotoğraf sanatçısı\n☕ Kahve bağımlısı',website:'',avatar:gradientImg('#f72585','#7209b7',100,100),followers:['u2','u3'],following:['u2'],posts:[],stories:[],saved:[],created:Date.now()-864e5},
-    {id:'u2',username:'deniz_ky',fullname:'Deniz Kayalı',bio:'🌊 Denizi seviyorum\n🏄‍♂️ Sörf yapıyorum',website:'https://deniz.com',avatar:gradientImg('#4cc9f0','#4361ee',100,100),followers:['u1'],following:['u1','u3'],posts:[],stories:[],saved:[],created:Date.now()-72e5},
-    {id:'u3',username:'alp_dev',fullname:'Alp Demir',bio:'💻 Developer\n🎮 Gamer',website:'',avatar:gradientImg('#06d6a0','#118ab2',100,100),followers:['u1','u2'],following:['u1'],posts:[],stories:[],saved:[],created:Date.now()-36e5},
-  ];
-
-  const posts=[
-    {id:'p1',userId:'u1',img:DEMO_IMGS[0],caption:'Güzel bir gün 🌸 #foto #güzel',location:'İstanbul',filter:'none',likes:['u2','u3'],comments:[{id:'c1',userId:'u2',text:'Harika! 😍',ts:Date.now()-36e5,likes:[]}],saved:[],ts:Date.now()-72e5},
-    {id:'p2',userId:'u2',img:DEMO_IMGS[1],caption:'Deniz kenarı 🌊 #surf #deniz',location:'Antalya',filter:'none',likes:['u1'],comments:[],saved:[],ts:Date.now()-48e5},
-    {id:'p3',userId:'u3',img:DEMO_IMGS[2],caption:'Kod yazıyorum 💻 #developer #code',location:'Ankara',filter:'none',likes:['u1','u2'],comments:[{id:'c2',userId:'u1',text:'Kral iş 🔥',ts:Date.now()-12e5,likes:[]}],saved:[],ts:Date.now()-24e5},
-    {id:'p4',userId:'u1',img:DEMO_IMGS[3],caption:'Şehir manzarası 🌆 #cityscape',location:'İzmir',filter:'none',likes:['u3'],comments:[],saved:[],ts:Date.now()-180e5},
-    {id:'p5',userId:'u2',img:DEMO_IMGS[4],caption:'Gün batımı 🌅 #sunset #nature',location:'Muğla',filter:'none',likes:['u1','u3'],comments:[],saved:[],ts:Date.now()-144e5},
-    {id:'p6',userId:'u3',img:DEMO_IMGS[5],caption:'Doğada yürüyüş 🌿 #hiking',location:'Kapadokya',filter:'none',likes:['u2'],comments:[],saved:[],ts:Date.now()-96e5},
-  ];
-
-  // Assign posts to users
-  posts.forEach(p=>{ const u=users.find(x=>x.id===p.userId); if(u) u.posts.push(p.id); });
-
-  const stories=[
-    {id:'s1',userId:'u1',img:DEMO_IMGS[6],caption:'Bugün harika! ✨',ts:Date.now()-3e5,viewers:[],likes:[]},
-    {id:'s2',userId:'u2',img:DEMO_IMGS[7],caption:'Deniz keyfi 🌊',ts:Date.now()-2e5,viewers:[],likes:[]},
-  ];
-  users.find(u=>u.id==='u1').stories=['s1'];
-  users.find(u=>u.id==='u2').stories=['s2'];
-
-  const msgs={};
-
-  S.set('users', users);
-  S.set('posts', posts);
-  S.set('stories', stories);
-  S.set('messages', msgs);
-  S.set('notifications', []);
-  S.set('initialized', true);
+  if(S.get('data_version') !== DATA_VERSION){
+    localStorage.clear();
+    S.set('data_version', DATA_VERSION);
+  }
+  if(!S.get('users')) S.set('users', []);
+  if(!S.get('posts')) S.set('posts', []);
+  if(!S.get('stories')) S.set('stories', []);
+  if(!S.get('messages')) S.set('messages', {});
+  if(!S.get('notifications')) S.set('notifications', []);
 }
 
 function getUsers(){ return S.get('users',[]); }
@@ -147,37 +157,69 @@ function pushNotif(toUserId, type, fromUserId, postId=null){
 }
 
 // ─── AUTH ───────────────────────────────────────────────────
-document.getElementById('login-form').addEventListener('submit',e=>{
+document.getElementById('login-form').addEventListener('submit', async e=>{
   e.preventDefault();
   const id=document.getElementById('login-identifier').value.trim();
   const pw=document.getElementById('login-password').value;
+  if(!id||!pw){ showAuthError('login','Lütfen tüm alanları doldurun.'); return; }
+
+  // 1. Try server login
+  const res = await apiCall('/api/login', 'POST', { identifier: id, password: pw });
+  if(res && res.success && res.user){
+    doLogin(res.user);
+    await syncData(true);
+    return;
+  } else if(res && res.error){
+    showAuthError('login', res.error);
+    return;
+  }
+
+  // 2. Offline fallback
   const users=getUsers();
-  const u=users.find(x=>(x.username===id||x.email===id)&&x.password===pw);
+  const u=users.find(x=>(x.username.toLowerCase()===id.toLowerCase()||x.email.toLowerCase()===id.toLowerCase())&&x.password===pw);
   if(!u){ showAuthError('login','Kullanıcı adı veya şifre hatalı.'); return; }
   doLogin(u);
 });
 
-document.getElementById('register-form').addEventListener('submit',e=>{
+document.getElementById('register-form').addEventListener('submit', async e=>{
   e.preventDefault();
-  const email=document.getElementById('reg-email').value.trim();
+  const email=document.getElementById('reg-email').value.trim().toLowerCase();
   const fullname=document.getElementById('reg-fullname').value.trim();
-  const username=document.getElementById('reg-username').value.trim();
+  const username=document.getElementById('reg-username').value.trim().toLowerCase();
   const password=document.getElementById('reg-password').value;
-  const avatar=document.getElementById('reg-av-preview').src||'';
+  const avatarImg=document.getElementById('reg-av-preview');
+  const avatar=(avatarImg && avatarImg.src && !avatarImg.src.endsWith('#') && avatarImg.style.display !== 'none') ? avatarImg.src : generateDefaultAvatar(username);
 
   if(!email||!fullname||!username||!password){ showAuthError('reg','Tüm alanları doldurun.'); return; }
   if(password.length<6){ showAuthError('reg','Şifre en az 6 karakter olmalı.'); return; }
   if(!/^[a-z0-9_.]+$/.test(username)){ showAuthError('reg','Kullanıcı adı sadece harf, rakam, nokta ve alt çizgi içerebilir.'); return; }
 
+  // 1. Try server register
+  const res = await apiCall('/api/register', 'POST', { username, fullname, email, password, avatar });
+  if(res && res.success && res.user){
+    const users = getUsers();
+    users.push(res.user);
+    saveUsers(users);
+    doLogin(res.user);
+    await syncData(true);
+    showToast('Hoş geldin, @' + username + '!');
+    return;
+  } else if(res && res.error){
+    showAuthError('reg', res.error);
+    return;
+  }
+
+  // 2. Offline fallback
   const users=getUsers();
   if(users.find(u=>u.username===username)){ showAuthError('reg','Bu kullanıcı adı alınmış.'); return; }
   if(users.find(u=>u.email===email)){ showAuthError('reg','Bu e-posta ile zaten kayıt var.'); return; }
 
-  const newUser={id:uid(),username,fullname,email,password,bio:'',website:'',
-    avatar:avatar&&avatar!==''?avatar:gradientImg('#'+Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0'),'#'+Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0'),100,100),
+  const newUser={id:'u_'+uid(),username,fullname,email,password,bio:'',website:'',
+    avatar,
     followers:[],following:[],posts:[],stories:[],saved:[],created:Date.now()};
   users.push(newUser); saveUsers(users);
   doLogin(newUser);
+  showToast('Hoş geldin, @' + username + '!');
 });
 
 function showAuthError(form, msg){
@@ -204,7 +246,8 @@ function doLogin(user){
   document.getElementById('main-app').style.height='100vh';
   // update nav avatar
   const na=document.getElementById('nav-avatar');
-  na.src=user.avatar||''; na.onerror=()=>na.style.display='none';
+  na.src=user.avatar||generateDefaultAvatar(user.username);
+  na.style.display='block';
   renderNotifBadge();
   switchTab('home');
 }
@@ -212,13 +255,20 @@ function doLogin(user){
 function showLogin(){ document.getElementById('login-screen').style.display='flex'; document.getElementById('register-screen').style.display='none'; }
 function showRegister(){ document.getElementById('login-screen').style.display='none'; document.getElementById('register-screen').style.display='flex'; }
 
-// ─── AUTO-LOGIN ─────────────────────────────────────────────
-(function(){
+// ─── AUTO-LOGIN & LIVE SYNC ────────────────────────────────
+(async function(){
   initData();
+  await syncData(true);
   const savedId=S.get('currentUserId');
-  if(savedId){ const u=getUser(savedId); if(u){ doLogin(u); return; } }
-  // show login
-  document.getElementById('login-screen').style.display='flex';
+  if(savedId){
+    const u=getUser(savedId);
+    if(u){ doLogin(u); }
+    else { document.getElementById('login-screen').style.display='flex'; }
+  } else {
+    document.getElementById('login-screen').style.display='flex';
+  }
+  // Sync live every 4 seconds so other registered users & posts show up automatically
+  setInterval(() => syncData(false), 4000);
 })();
 
 // ─── TAB NAVIGATION ─────────────────────────────────────────
@@ -291,15 +341,36 @@ function renderFeed(){
   const feed=document.getElementById('feed-list');
   const allPosts=getPosts().sort((a,b)=>b.ts-a.ts);
   const me=currentUser;
-  // Show posts from self + following
-  const visible=allPosts.filter(p=>p.userId===me.id||me.following.includes(p.userId));
+  const users=getUsers();
+
+  // If user is following someone, show posts from self + following. If following is empty, show all posts so feed is alive!
+  const visible = (me.following && me.following.length > 0)
+    ? allPosts.filter(p=>p.userId===me.id||me.following.includes(p.userId))
+    : allPosts;
 
   if(!visible.length){
-    feed.innerHTML=`<div class="empty-state">
+    const otherUsers = users.filter(u=>u.id!==me.id);
+    feed.innerHTML=`<div class="empty-state" style="padding:32px 16px">
       <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-      <h3>Henüz Gönderi Yok</h3>
-      <p>Hesap takip et veya ilk gönderini paylaş.</p>
-    </div>`; return;
+      <h3>Akışın Boş</h3>
+      <p>Henüz gönderi yok. İlk gönderini paylaş veya diğer kullanıcıları takip et!</p>
+      ${otherUsers.length ? `
+        <div style="margin-top:20px;width:100%">
+          <div style="font-size:12px;font-weight:700;color:#a8a8a8;text-transform:uppercase;margin-bottom:12px;text-align:left">Kayıtlı Kullanıcılar</div>
+          ${otherUsers.map(u=>`
+            <div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #1a1a1a">
+              <div onclick="viewProfile('${u.id}')" style="cursor:pointer">${avatarHtml(u.avatar, 40)}</div>
+              <div style="flex:1;text-align:left;cursor:pointer" onclick="viewProfile('${u.id}')">
+                <div style="font-weight:600;font-size:13px">${esc(u.username)}</div>
+                <div style="font-size:11px;color:#737373">${esc(u.fullname)}</div>
+              </div>
+              <button onclick="toggleFollow('${u.id}');renderFeed();" style="background:#0095f6;color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Takip Et</button>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+    </div>`;
+    return;
   }
   feed.innerHTML=visible.map(p=>postCardHtml(p,me)).join('');
   // attach double-tap
@@ -388,6 +459,7 @@ function toggleLike(postId){
   if(btn){ btn.classList.toggle('liked', li<0); }
   const likeEl=document.querySelector(`#post-${postId} .post-likes`);
   if(likeEl){ likeEl.textContent=p.likes.length?p.likes.length+' beğeni':''; }
+  apiCall('/api/posts/like', 'POST', { postId, userId: me });
 }
 
 function toggleSave(postId){
@@ -407,6 +479,7 @@ function toggleSave(postId){
     if(idx>-1) users[ui].saved.splice(idx,1); else users[ui].saved.push(postId);
     saveUsers(users); if(currentUser.id===me) currentUser=users[ui];
   }
+  apiCall('/api/posts/save', 'POST', { postId, userId: me });
 }
 
 // ─── COMMENTS ───────────────────────────────────────────────
@@ -453,7 +526,7 @@ function postComment(){
   const inp=document.getElementById('comment-input');
   const text=inp.value.trim(); if(!text||!activePostId) return;
   const posts=getPosts(); const pi=posts.findIndex(p=>p.id===activePostId); if(pi<0) return;
-  const c={id:uid(),userId:currentUser.id,text,ts:Date.now(),likes:[]};
+  const c={id:'c_'+uid(),userId:currentUser.id,text,ts:Date.now(),likes:[]};
   posts[pi].comments.push(c);
   savePosts(posts);
   pushNotif(posts[pi].userId,'comment',currentUser.id,activePostId);
@@ -462,6 +535,7 @@ function postComment(){
   document.getElementById('comment-post-btn').style.opacity='0.5';
   renderCommentsList();
   const list=document.getElementById('comments-list'); list.scrollTop=list.scrollHeight;
+  apiCall('/api/posts/comment', 'POST', { postId: activePostId, comment: c });
 }
 
 function addEmoji(emoji){
@@ -566,16 +640,38 @@ function renderExplore(){
 function renderExploreGrid(){
   const posts=getPosts().sort(()=>Math.random()-.5);
   const container=document.getElementById('explore-content');
-  if(!posts.length){ container.innerHTML='<div class="empty-state"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><h3>İçerik Yok</h3><p>Daha fazla kullanıcı takip ettiğinde burada gönderiler görünür.</p></div>'; return; }
-  let html='<div class="explore-grid">';
+  const users=getUsers().filter(u=>u.id!==currentUser.id);
+
+  let html = '';
+  if(users.length > 0){
+    html += '<div style="padding:12px 16px 6px;font-size:12px;font-weight:700;color:#a8a8a8;text-transform:uppercase;letter-spacing:0.5px">Kayıtlı Kullanıcılar</div>';
+    html += '<div style="display:flex;gap:12px;overflow-x:auto;padding:6px 16px 14px;scrollbar-width:none">';
+    users.forEach(u => {
+      const isFollowing = currentUser.following.includes(u.id);
+      html += `<div style="display:flex;flex-direction:column;align-items:center;min-width:90px;background:#181818;border:1px solid #262626;border-radius:12px;padding:12px 8px;cursor:pointer" onclick="viewProfile('${u.id}')">
+        ${avatarHtml(u.avatar, 52)}
+        <div style="font-size:12px;font-weight:600;color:#fff;margin-top:6px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(u.username)}</div>
+        <div style="font-size:10px;color:#737373;margin-bottom:8px">${u.followers.length} takipçi</div>
+        <button onclick="event.stopPropagation();toggleFollow('${u.id}');renderExploreGrid();" style="background:${isFollowing?'#262626':'#0095f6'};border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">${isFollowing?'Takip':'Takip Et'}</button>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  if(!posts.length){
+    html += '<div class="empty-state"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><h3>İçerik Yok</h3><p>Yeni fotoğraflar paylaşıldığında burada görünecek.</p></div>';
+    container.innerHTML = html;
+    return;
+  }
+  html += '<div class="explore-grid">';
   posts.forEach((p,i)=>{
     const large=(i%10===0);
     html+=`<div class="explore-cell${large?' large':''}" onclick="openPostInExplore('${p.id}')">
       <img src="${p.img}" alt="" loading="lazy" />
     </div>`;
   });
-  html+='</div>';
-  container.innerHTML=html;
+  html += '</div>';
+  container.innerHTML = html;
 }
 
 function openPostInExplore(postId){
@@ -763,6 +859,7 @@ function toggleFollow(userId){
   if(fi>-1){ users[me].following.splice(fi,1); const ri=users[them].followers.indexOf(currentUser.id); if(ri>-1) users[them].followers.splice(ri,1); }
   else { users[me].following.push(userId); users[them].followers.push(currentUser.id); pushNotif(userId,'follow',currentUser.id); }
   saveUsers(users); currentUser=users[me];
+  apiCall('/api/follow', 'POST', { myId: currentUser.id, targetId: userId });
 }
 
 function toggleFollowProfile(userId){
@@ -798,7 +895,7 @@ function saveProfile(){
   const website=document.getElementById('edit-website').value.trim();
   if(!username){ showToast('Kullanıcı adı boş olamaz'); return; }
   const users=getUsers();
-  if(users.find(u=>u.id!==currentUser.id&&u.username===username)){ showToast('Bu kullanıcı adı alınmış'); return; }
+  if(users.find(u=>u.id!==currentUser.id&&u.username.toLowerCase()===username.toLowerCase())){ showToast('Bu kullanıcı adı alınmış'); return; }
   const changes={fullname,username,bio,website};
   if(newAvatarB64) changes.avatar=newAvatarB64;
   updateUser(currentUser.id, changes);
@@ -806,6 +903,7 @@ function saveProfile(){
   closeEditProfile();
   showToast('Profil güncellendi ✓');
   renderProfile();
+  apiCall('/api/profile', 'POST', { userId: currentUser.id, changes });
 }
 
 // ─── PROFILE OPTIONS ────────────────────────────────────────
@@ -839,6 +937,7 @@ function deletePost(postId){
   showToast('Gönderi silindi');
   if(currentTab==='home') renderFeed();
   else if(currentTab==='profile') renderProfile();
+  apiCall('/api/posts/delete', 'POST', { postId, userId: currentUser.id });
 }
 
 function logout(){
@@ -973,7 +1072,7 @@ function publishPost(){
   if(!createImgB64){ showToast('Önce bir fotoğraf seçin'); return; }
   const caption=document.getElementById('share-caption').value.trim();
   const location=document.getElementById('share-location').value.trim();
-  const newPost={id:uid(),userId:currentUser.id,img:createImgB64,caption,location,filter:createFilter,likes:[],comments:[],saved:[],ts:Date.now()};
+  const newPost={id:'p_'+uid(),userId:currentUser.id,img:createImgB64,caption,location,filter:createFilter,likes:[],comments:[],saved:[],ts:Date.now()};
   const posts=getPosts(); posts.unshift(newPost); savePosts(posts);
   // Add to user posts
   const users=getUsers(); const ui=users.findIndex(u=>u.id===currentUser.id);
@@ -981,6 +1080,8 @@ function publishPost(){
   closeCreateModal();
   showToast('Gönderi paylaşıldı! 🎉');
   switchTab('home');
+
+  apiCall('/api/posts', 'POST', { post: newPost });
 }
 
 // ─── CREATE STORY ────────────────────────────────────────────
@@ -1017,13 +1118,15 @@ function storyImageSelected(input){
 function publishStory(){
   if(!storyImgB64){ showToast('Önce fotoğraf seçin'); return; }
   const caption=(document.getElementById('story-caption-input')||{}).value||'';
-  const newStory={id:uid(),userId:currentUser.id,img:storyImgB64,caption,ts:Date.now(),viewers:[],likes:[]};
+  const newStory={id:'s_'+uid(),userId:currentUser.id,img:storyImgB64,caption,ts:Date.now(),viewers:[],likes:[]};
   const stories=getStories(); stories.push(newStory); saveStories(stories);
   const users=getUsers(); const ui=users.findIndex(u=>u.id===currentUser.id);
   if(ui>-1){ if(!users[ui].stories) users[ui].stories=[]; users[ui].stories.push(newStory.id); saveUsers(users); currentUser=users[ui]; }
   closeStoryCreate();
   showToast('Hikayeniz paylaşıldı! ✨');
   renderStories();
+
+  apiCall('/api/stories', 'POST', { story: newStory });
 }
 
 // ─── DIRECT MESSAGES ────────────────────────────────────────
@@ -1060,7 +1163,7 @@ function renderDM(){
     const preview=c.last?(c.last.senderId===currentUser.id?'Siz: ':'')+c.last.text.substring(0,40):'Mesaj başlat...';
     return `<div class="dm-user-item" onclick="openChat('${c.user.id}')">
       <div style="position:relative">
-        ${avatarHtml(c.user.id,50)}
+        ${avatarHtml(c.user.avatar,50)}
         <span class="online-dot" style="position:absolute;bottom:1px;right:1px;width:12px;height:12px;background:#3bd671;border-radius:50%;border:2px solid #000"></span>
       </div>
       <div style="flex:1;min-width:0">
@@ -1157,21 +1260,13 @@ function sendMessage(){
   const key=convKey(currentUser.id,chatPartnerId);
   const msgs=S.get('messages',{});
   if(!msgs[key]) msgs[key]=[];
-  msgs[key].push({id:uid(),senderId:currentUser.id,text,ts:Date.now(),read:false});
+  const newMsg={id:'m_'+uid(),senderId:currentUser.id,text,ts:Date.now(),read:false};
+  msgs[key].push(newMsg);
   S.set('messages',msgs);
   inp.value='';
   renderChatMessages();
-  // simulate reply
-  setTimeout(()=>{
-    const replies=['😊','👍','Harika!','Teşekkürler!','Anladım!','Tamam 👌','❤️','🔥 Müthiş!'];
-    const key2=convKey(currentUser.id,chatPartnerId);
-    const msgs2=S.get('messages',{});
-    if(!msgs2[key2]) msgs2[key2]=[];
-    msgs2[key2].push({id:uid(),senderId:chatPartnerId,text:replies[Math.floor(Math.random()*replies.length)],ts:Date.now(),read:false});
-    S.set('messages',msgs2);
-    renderChatMessages();
-    renderDMBadge();
-  }, 1500+Math.random()*1500);
+
+  apiCall('/api/messages', 'POST', { key, message: newMsg });
 }
 
 function sendHeart(){
