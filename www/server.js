@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const path = require('path');
 const fs = require('fs');
 
@@ -53,6 +53,80 @@ app.get('/api/data', (req, res) => {
     stories: db.stories || [],
     messages: db.messages || {},
     notifications: db.notifications || []
+  });
+});
+
+// Restore & Merge from client backup (prevents data loss when free container restarts)
+app.post('/api/sync-restore', (req, res) => {
+  const incoming = req.body;
+  if (!incoming) return res.json({ success: false });
+
+  const db = readDB();
+  db.users = db.users || [];
+  db.posts = db.posts || [];
+  db.stories = db.stories || [];
+  db.messages = db.messages || {};
+  db.notifications = db.notifications || [];
+
+  // Merge users
+  if (Array.isArray(incoming.users)) {
+    incoming.users.forEach(u => {
+      const idx = db.users.findIndex(x => x.id === u.id || x.username.toLowerCase() === u.username.toLowerCase());
+      if (idx > -1) {
+        db.users[idx] = Object.assign({}, db.users[idx], u);
+      } else {
+        db.users.push(u);
+      }
+    });
+  }
+
+  // Merge posts
+  if (Array.isArray(incoming.posts)) {
+    incoming.posts.forEach(p => {
+      const idx = db.posts.findIndex(x => x.id === p.id);
+      if (idx > -1) {
+        const mergedLikes = Array.from(new Set([...(db.posts[idx].likes || []), ...(p.likes || [])]));
+        const mergedSaved = Array.from(new Set([...(db.posts[idx].saved || []), ...(p.saved || [])]));
+        db.posts[idx] = Object.assign({}, db.posts[idx], p, { likes: mergedLikes, saved: mergedSaved });
+      } else {
+        db.posts.push(p);
+      }
+    });
+    db.posts.sort((a, b) => b.ts - a.ts);
+  }
+
+  // Merge stories
+  if (Array.isArray(incoming.stories)) {
+    const now = Date.now();
+    incoming.stories.forEach(s => {
+      if (now - s.ts < 86400000) {
+        const idx = db.stories.findIndex(x => x.id === s.id);
+        if (idx === -1) db.stories.push(s);
+      }
+    });
+  }
+
+  // Merge messages
+  if (incoming.messages && typeof incoming.messages === 'object') {
+    Object.keys(incoming.messages).forEach(k => {
+      if (!db.messages[k]) db.messages[k] = [];
+      const existingIds = new Set(db.messages[k].map(m => m.id));
+      (incoming.messages[k] || []).forEach(m => {
+        if (!existingIds.has(m.id)) {
+          db.messages[k].push(m);
+        }
+      });
+      db.messages[k].sort((a, b) => a.ts - b.ts);
+    });
+  }
+
+  writeDB(db);
+  res.json({
+    success: true,
+    users: db.users,
+    posts: db.posts,
+    stories: db.stories,
+    messages: db.messages
   });
 });
 

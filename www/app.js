@@ -86,40 +86,125 @@ async function apiCall(endpoint, method='GET', body=null){
 
 async function syncData(silent = false){
   const data = await apiCall('/api/data');
-  if(data && data.users){
-    S.set('users', data.users);
-    S.set('posts', data.posts || []);
-    S.set('stories', data.stories || []);
-    S.set('messages', data.messages || {});
-    S.set('notifications', data.notifications || []);
+  if(!data) return;
 
-    if(currentUser){
-      const refreshed = data.users.find(u => u.id === currentUser.id);
-      if(refreshed){
-        currentUser = refreshed;
-      }
-    }
+  const localUsers = S.get('users', []);
+  const localPosts = S.get('posts', []);
+  const localStories = S.get('stories', []);
+  const localMessages = S.get('messages', {});
 
-    if(!silent && currentUser){
-      if(currentTab === 'home'){ renderStories(); renderFeed(); }
-      else if(currentTab === 'explore'){ renderExplore(); }
-      else if(currentTab === 'profile'){ renderProfile(); }
-      else if(currentTab === 'direct'){
-        if(chatPartnerId) renderChatMessages();
-        else renderDM();
-      }
-      else if(currentTab === 'notifications'){ renderNotifications(); }
-      renderDMBadge();
-      renderNotifBadge();
+  const serverUsers = data.users || [];
+  const serverPosts = data.posts || [];
+  const serverStories = data.stories || [];
+  const serverMessages = data.messages || {};
+
+  // Check if server is missing data that client has (e.g. server restarted or container reset)
+  const clientHasMoreUsers = localUsers.some(lu => !serverUsers.some(su => su.id === lu.id));
+  const clientHasMorePosts = localPosts.some(lp => !serverPosts.some(sp => sp.id === lp.id));
+
+  if (clientHasMoreUsers || clientHasMorePosts) {
+    const restored = await apiCall('/api/sync-restore', 'POST', {
+      users: localUsers,
+      posts: localPosts,
+      stories: localStories,
+      messages: localMessages
+    });
+    if (restored && restored.users) {
+      data.users = restored.users;
+      data.posts = restored.posts;
+      data.stories = restored.stories;
+      data.messages = restored.messages;
     }
+  }
+
+  // SMART MERGE: Never wipe local data with empty arrays!
+  // 1. Merge users
+  const mergedUsersMap = new Map();
+  localUsers.forEach(u => mergedUsersMap.set(u.id, u));
+  (data.users || []).forEach(u => {
+    const existing = mergedUsersMap.get(u.id);
+    if (existing) {
+      const followers = Array.from(new Set([...(existing.followers || []), ...(u.followers || [])]));
+      const following = Array.from(new Set([...(existing.following || []), ...(u.following || [])]));
+      mergedUsersMap.set(u.id, Object.assign({}, existing, u, { followers, following }));
+    } else {
+      mergedUsersMap.set(u.id, u);
+    }
+  });
+  const mergedUsers = Array.from(mergedUsersMap.values());
+  S.set('users', mergedUsers);
+
+  // 2. Merge posts (keep user's current like state)
+  const mergedPostsMap = new Map();
+  localPosts.forEach(p => mergedPostsMap.set(p.id, p));
+  (data.posts || []).forEach(p => {
+    const existing = mergedPostsMap.get(p.id);
+    if (existing) {
+      const likes = Array.from(new Set([...(existing.likes || []), ...(p.likes || [])]));
+      const saved = Array.from(new Set([...(existing.saved || []), ...(p.saved || [])]));
+      mergedPostsMap.set(p.id, Object.assign({}, existing, p, { likes, saved }));
+    } else {
+      mergedPostsMap.set(p.id, p);
+    }
+  });
+  const mergedPosts = Array.from(mergedPostsMap.values()).sort((a, b) => b.ts - a.ts);
+  const postCountChanged = (mergedPosts.length !== localPosts.length);
+  S.set('posts', mergedPosts);
+
+  // 3. Merge stories
+  const now = Date.now();
+  const mergedStoriesMap = new Map();
+  localStories.forEach(s => { if(now - s.ts < 86400000) mergedStoriesMap.set(s.id, s); });
+  (data.stories || []).forEach(s => { if(now - s.ts < 86400000) mergedStoriesMap.set(s.id, s); });
+  S.set('stories', Array.from(mergedStoriesMap.values()));
+
+  // 4. Merge messages
+  const mergedMsgs = Object.assign({}, localMessages);
+  if (data.messages) {
+    Object.keys(data.messages).forEach(k => {
+      const thread = mergedMsgs[k] || [];
+      const ids = new Set(thread.map(m => m.id));
+      (data.messages[k] || []).forEach(m => {
+        if (!ids.has(m.id)) thread.push(m);
+      });
+      thread.sort((a, b) => a.ts - b.ts);
+      mergedMsgs[k] = thread;
+    });
+  }
+  S.set('messages', mergedMsgs);
+
+  // 5. Notifications
+  if (data.notifications && data.notifications.length) {
+    S.set('notifications', data.notifications);
+  }
+
+  // Refresh current user
+  if (currentUser) {
+    const refreshed = mergedUsers.find(u => u.id === currentUser.id);
+    if (refreshed) {
+      currentUser = refreshed;
+    }
+  }
+
+  // Update UI only if not silent, or if new content arrived
+  if (!silent && currentUser) {
+    if (currentTab === 'home') {
+      renderStories();
+      if (postCountChanged) renderFeed();
+    }
+    else if (currentTab === 'explore') { renderExploreGrid(); }
+    else if (currentTab === 'profile') { renderProfile(); }
+    else if (currentTab === 'direct') {
+      if (chatPartnerId) renderChatMessages();
+      else renderDM();
+    }
+    else if (currentTab === 'notifications') { renderNotifications(); }
+    renderDMBadge();
+    renderNotifBadge();
   }
 }
 
 function initData(){
-  if(S.get('data_version') !== DATA_VERSION){
-    localStorage.clear();
-    S.set('data_version', DATA_VERSION);
-  }
   if(!S.get('users')) S.set('users', []);
   if(!S.get('posts')) S.set('posts', []);
   if(!S.get('stories')) S.set('stories', []);
@@ -343,28 +428,30 @@ function renderFeed(){
   const me=currentUser;
   const users=getUsers();
 
+  const myFollowing = Array.isArray(me.following) ? me.following : [];
   // If user is following someone, show posts from self + following. If following is empty, show all posts so feed is alive!
-  const visible = (me.following && me.following.length > 0)
-    ? allPosts.filter(p=>p.userId===me.id||me.following.includes(p.userId))
+  const visible = (myFollowing.length > 0)
+    ? allPosts.filter(p=>p.userId===me.id||myFollowing.includes(p.userId))
     : allPosts;
 
   if(!visible.length){
-    const otherUsers = users.filter(u=>u.id!==me.id);
+    // Exclude myself and users that I ALREADY follow!
+    const otherUsers = users.filter(u=>u.id!==me.id && !myFollowing.includes(u.id));
     feed.innerHTML=`<div class="empty-state" style="padding:32px 16px">
       <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       <h3>Akışın Boş</h3>
-      <p>Henüz gönderi yok. İlk gönderini paylaş veya diğer kullanıcıları takip et!</p>
+      <p>${myFollowing.length > 0 ? 'Takip ettiğin kullanıcıların henüz bir gönderisi yok.' : 'Henüz kimseyi takip etmiyorsun. Aşağıdaki kullanıcılardan takip edebilirsin!'}</p>
       ${otherUsers.length ? `
         <div style="margin-top:20px;width:100%">
-          <div style="font-size:12px;font-weight:700;color:#a8a8a8;text-transform:uppercase;margin-bottom:12px;text-align:left">Kayıtlı Kullanıcılar</div>
+          <div style="font-size:12px;font-weight:700;color:#a8a8a8;text-transform:uppercase;margin-bottom:12px;text-align:left">Önerilen Kullanıcılar</div>
           ${otherUsers.map(u=>`
-            <div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #1a1a1a">
+            <div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #1a1a1a" id="user-suggest-${u.id}">
               <div onclick="viewProfile('${u.id}')" style="cursor:pointer">${avatarHtml(u.avatar, 40)}</div>
               <div style="flex:1;text-align:left;cursor:pointer" onclick="viewProfile('${u.id}')">
                 <div style="font-weight:600;font-size:13px">${esc(u.username)}</div>
                 <div style="font-size:11px;color:#737373">${esc(u.fullname)}</div>
               </div>
-              <button onclick="toggleFollow('${u.id}');renderFeed();" style="background:#0095f6;color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Takip Et</button>
+              <button onclick="handleFeedFollow('${u.id}')" style="background:#0095f6;color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">Takip Et</button>
             </div>
           `).join('')}
         </div>
@@ -373,22 +460,19 @@ function renderFeed(){
     return;
   }
   feed.innerHTML=visible.map(p=>postCardHtml(p,me)).join('');
-  // attach double-tap
-  document.querySelectorAll('.post-media').forEach(el=>{
-    let last=0;
-    el.addEventListener('click',()=>{
-      const now=Date.now(); if(now-last<300){ toggleLike(el.dataset.postId); }
-      last=now;
-    });
-  });
+}
+
+async function handleFeedFollow(userId){
+  toggleFollow(userId);
+  renderFeed();
 }
 
 function postCardHtml(p, me){
   const author=getUser(p.userId); if(!author) return '';
-  const liked=p.likes.includes(me.id);
-  const saved=(p.saved||[]).includes(me.id);
-  const count=p.likes.length;
-  const commentCount=p.comments.length;
+  const liked=Array.isArray(p.likes) && p.likes.includes(me.id);
+  const saved=Array.isArray(p.saved) && p.saved.includes(me.id);
+  const count=Array.isArray(p.likes) ? p.likes.length : 0;
+  const commentCount=Array.isArray(p.comments) ? p.comments.length : 0;
   const filterStyle=filterCSS(p.filter||'none');
   return `<div class="post-card" id="post-${p.id}">
     <div class="post-header">
@@ -425,7 +509,7 @@ function postCardHtml(p, me){
         <svg viewBox="0 0 24 24"><polygon points="19 21 12 16 5 21 5 3 19 3"/></svg>
       </button>
     </div>
-    ${count?`<div class="post-likes">${count} beğeni</div>`:''}
+    <div class="post-likes">${count ? count + ' beğeni' : ''}</div>
     ${p.caption?`<div class="post-caption"><strong onclick="viewProfile('${author.id}')">${esc(author.username)}</strong>${esc(p.caption)}</div>`:''}
     ${commentCount?`<div class="post-comments-link" onclick="openComments('${p.id}')">Tüm ${commentCount} yorumu gör</div>`:''}
     <div class="post-time">${timeAgo(p.ts)}</div>
@@ -437,7 +521,13 @@ function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
 let lastClickTime={};
 function handlePostClick(e, postId){
   const now=Date.now();
-  if(lastClickTime[postId]&&now-lastClickTime[postId]<300){ triggerLikeAnim(postId); toggleLike(postId); }
+  if(lastClickTime[postId] && (now - lastClickTime[postId] < 350)){
+    triggerLikeAnim(postId);
+    const p = getPost(postId);
+    if(p && !p.likes.includes(currentUser.id)){
+      toggleLike(postId);
+    }
+  }
   lastClickTime[postId]=now;
 }
 
@@ -448,18 +538,48 @@ function triggerLikeAnim(postId){
   setTimeout(()=>hb.classList.remove('animate'),900);
 }
 
-function toggleLike(postId){
-  const posts=getPosts(); const pi=posts.findIndex(p=>p.id===postId); if(pi<0) return;
-  const p=posts[pi]; const me=currentUser.id;
-  const li=p.likes.indexOf(me);
-  if(li>-1){ p.likes.splice(li,1); } else { p.likes.push(me); pushNotif(p.userId,'like',me,postId); }
+async function toggleLike(postId){
+  const posts = getPosts();
+  const pi = posts.findIndex(p => p.id === postId);
+  if(pi < 0) return;
+  const p = posts[pi];
+  const me = currentUser.id;
+  if(!Array.isArray(p.likes)) p.likes = [];
+
+  const idx = p.likes.indexOf(me);
+  let isNowLiked = false;
+
+  if(idx > -1){
+    p.likes.splice(idx, 1);
+    isNowLiked = false;
+  } else {
+    p.likes.push(me);
+    pushNotif(p.userId, 'like', me, postId);
+    isNowLiked = true;
+  }
   savePosts(posts);
-  // Update UI
-  const btn=document.getElementById('like-btn-'+postId);
-  if(btn){ btn.classList.toggle('liked', li<0); }
-  const likeEl=document.querySelector(`#post-${postId} .post-likes`);
-  if(likeEl){ likeEl.textContent=p.likes.length?p.likes.length+' beğeni':''; }
-  apiCall('/api/posts/like', 'POST', { postId, userId: me });
+
+  // Update UI immediately
+  const btn = document.getElementById('like-btn-' + postId);
+  if(btn){
+    btn.classList.toggle('liked', isNowLiked);
+  }
+  const likeEl = document.querySelector(`#post-${postId} .post-likes`);
+  if(likeEl){
+    likeEl.textContent = p.likes.length ? p.likes.length + ' beğeni' : '';
+  }
+
+  try {
+    const res = await apiCall('/api/posts/like', 'POST', { postId, userId: me });
+    if(res && Array.isArray(res.likes)){
+      p.likes = res.likes;
+      savePosts(posts);
+      if(btn) btn.classList.toggle('liked', p.likes.includes(me));
+      if(likeEl) likeEl.textContent = p.likes.length ? p.likes.length + ' beğeni' : '';
+    }
+  } catch(e) {
+    console.error('Like error:', e);
+  }
 }
 
 function toggleSave(postId){
